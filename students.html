@@ -1,0 +1,45 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BayadQR</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="assets/css/app.css">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script><script src="app.js"></script></head><body><script>
+boot('Students','students.html','Each student gets a permanent QR code, emailed automatically.',async root=>{
+ let sec=[],stu=[],pay=[],evs=[],edit=null;
+ root.innerHTML=`<form class="card" id="f"><div class="grid">
+  <div><label>Full name</label><input id="fn" required></div><div><label>Student Gmail</label><input id="em" type="email"></div>
+  <div><label>Year level</label><input id="yl"></div><div><label>Section</label><select id="sc"></select></div></div>
+  <p><button id="sv">Add student</button> <button type="button" class="ghost" id="cn" style="display:none">Cancel</button></p></form>
+  <div class="card" style="margin-top:16px"><div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+  <input id="q" placeholder="Search name..." style="flex:1;min-width:160px"><select id="fs"></select>
+  <button class="ghost" id="sn">Send QR to all not yet sent</button><button class="ghost" id="sa">Send QR to ALL</button></div>
+  <table style="width:100%"><tbody id="t"></tbody></table></div>`;
+ const load=async()=>{[sec,stu,pay,evs]=await Promise.all([getAll('sections'),getAll('students'),getAll('payments'),getAll('events')]);
+  sec.sort((a,b)=>natsort(a.name,b.name));stu.sort((a,b)=>natsort(a.full_name,b.full_name));
+  const o=sec.map(x=>`<option>${esc(x.name)}</option>`).join('');const cur=$('#sc').value,cf=$('#fs').value;
+  $('#sc').innerHTML='<option value="">Not set yet</option>'+o;$('#sc').value=cur;$('#fs').innerHTML='<option value="">All sections</option>'+o;$('#fs').value=cf;draw();};
+ const dues=s=>{const E={};evs.forEach(e=>E[e.id]=e);return pay.filter(p=>p.student_id===s.id&&E[p.event_id]).map(p=>[E[p.event_id].name,Math.max(0,p.amount-(p.paid||0))]);};
+ const draw=()=>{const q=$('#q').value.toLowerCase(),fs=$('#fs').value;
+  const rows=stu.filter(s=>s.full_name.toLowerCase().includes(q)&&(!fs||s.section===fs));
+  $('#t').innerHTML=rows.map(s=>`<tr><td><img src="${qrImg(s.qr_code,100)}" width="72" height="72" alt=""></td>
+   <td><b>${esc(s.full_name)}</b><br><small>${esc(s.year_level||'')} ${esc(s.qr_code)}</small></td><td>${esc(s.section||'')}</td>
+   <td>${s.email?esc(s.email)+'<br>'+(s.qr_sent_at?'<span class="chip">QR sent</span>':'<span class="chip warn">Not sent</span>'):'<span class="chip warn">No email</span>'}</td>
+   <td><small>${dues(s).map(d=>esc(d[0])+': '+(d[1]>0?money(d[1]):'paid')).join('<br>')}</small></td>
+   <td style="white-space:nowrap"><button class="ghost" data-e="${s.id}">Edit</button> <button class="ghost" data-s="${s.id}">Send QR</button> <button class="ghost" data-d="${s.id}">Delete</button></td></tr>`).join('')||'<tr><td>No students.</td></tr>';
+  const by=id=>stu.find(x=>x.id===id);
+  $('#t').querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>{const s=by(b.dataset.e);edit=s.id;$('#fn').value=s.full_name;$('#em').value=s.email||'';$('#yl').value=s.year_level||'';$('#sc').value=s.section||'';$('#sv').textContent='Save changes';$('#cn').style.display='';scrollTo(0,0);});
+  $('#t').querySelectorAll('[data-s]').forEach(b=>b.onclick=async()=>{const[ok,m]=await mailQr(by(b.dataset.s));msg(ok?'QR emailed.':'Not sent: '+m,!ok);load();});
+  $('#t').querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this student and their payments?'))return;const id=b.dataset.d,w=db.batch();
+   w.delete(db.collection('students').doc(id));pay.filter(p=>p.student_id===id).forEach(p=>w.delete(db.collection('payments').doc(p.id)));await w.commit();load();});};
+ const reset=()=>{edit=null;$('#f').reset();$('#sv').textContent='Add student';$('#cn').style.display='none';};
+ $('#cn').onclick=reset;$('#q').oninput=draw;$('#fs').onchange=draw;
+ $('#f').onsubmit=async e=>{e.preventDefault();$('#sv').disabled=true;
+  const f={full_name:$('#fn').value.trim(),email:$('#em').value.trim(),year_level:$('#yl').value.trim(),section:$('#sc').value};let id=edit,old=null,note;
+  if(id){old=stu.find(x=>x.id===id);await db.collection('students').doc(id).set(f,{merge:true});note='Saved.';}
+  else{f.qr_code=await nextCode();f.qr_sent_at=null;f.created=Date.now();id=(await db.collection('students').add(f)).id;note='Student added.';}
+  await syncDues();const[rk,rm]=await pushRoster();if(!rk)note+=' (Sheet: '+rm+')';
+  if(f.email&&(!old||old.email!==f.email)){const s={...(old||{}),...f,id};const[ok,m]=await mailQr(s);note+=ok?' QR emailed.':' QR email failed: '+m;}
+  msg(note);reset();$('#sv').disabled=false;load();};
+ const bulk=async all=>{const todo=stu.filter(s=>s.email&&(all||!s.qr_sent_at));if(!todo.length)return msg('Nobody to send to.');let n=0,b=0;
+  for(const s of todo){msg('Sending '+(n+b+1)+' of '+todo.length+'...');const[ok]=await mailQr(s);ok?n++:b++;}msg('Sent '+n+' QR emails'+(b?', '+b+' failed.':'.'),b>0&&!n);load();};
+ $('#sn').onclick=()=>bulk(false);$('#sa').onclick=()=>confirm('Email ALL students, including those already sent?')&&bulk(true);
+ await load();});
+</script></body></html>

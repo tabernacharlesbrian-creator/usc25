@@ -1,0 +1,22 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BayadQR</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="assets/css/app.css">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script><script src="app.js"></script></head><body><script>
+boot('Settings','settings.html','Google Sheet, QR email and profile.',async root=>{
+ const st=await settings();const g=k=>esc(st[k]||'');
+ root.innerHTML=`<form class="card" id="a"><h2>Google Sheet</h2><label>Google Sheet link</label><input id="sid" value="${g('sheet_id')}" placeholder="https://docs.google.com/spreadsheets/d/..."><label>Sheet Web app URL (sheet_script.gs, ends with /exec)</label><input id="sur" value="${g('sheet_url')}">
+  <p><button>Save</button> <button type="button" class="ghost" id="ts">Test Sheet</button> <button type="button" class="ghost" id="ro">Send all students to the Sheet</button> <button type="button" class="ghost" id="rt">Retry unsent scans</button></p></form>
+  <form class="card" id="b" style="margin-top:16px"><h2>QR Email (Gmail)</h2><label>Mail Web app URL (mail_script.gs, ends with /exec)</label><input id="mu" value="${g('mail_url')}"><label>Secret (same as SECRET in the mail script)</label><input id="ms" value="${g('mail_secret')}"><label>Sender name</label><input id="sn" value="${g('sender_name')}" placeholder="BayadQR"><p><button>Save</button></p></form>
+  <form class="card" id="c" style="margin-top:16px"><h2>Profile / Login</h2><label>Your name (shown in the app)</label><input id="pn" value="${g('profile_name')}"><p><button>Save</button> <button type="button" class="ghost" id="pw">Email me a password reset</button></p></form>`;
+ $('#a').onsubmit=async e=>{e.preventDefault();const u=$('#sur').value.trim();if(u&&!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(u))return msg('The Web app URL must start with https://script.google.com/macros/s/ and end with /exec',true);
+  await saveSettings({sheet_id:sheetId($('#sid').value),sheet_url:u});msg('Google Sheet settings saved.');};
+ $('#b').onsubmit=async e=>{e.preventDefault();await saveSettings({mail_url:$('#mu').value.trim(),mail_secret:$('#ms').value.trim(),sender_name:$('#sn').value.trim()});msg('QR Email settings saved.');};
+ $('#c').onsubmit=async e=>{e.preventDefault();await saveSettings({profile_name:$('#pn').value.trim()});msg('Saved.');};
+ $('#pw').onclick=async()=>{await auth.sendPasswordResetEmail(auth.currentUser.email);msg('Password reset email sent to '+auth.currentUser.email);};
+ $('#ts').onclick=async()=>{const s=await settings();if(!s.sheet_url)return msg('Save the Web app URL first.',true);msg('Testing...');const j=await post(s.sheet_url,{action:'ping',sheetId:sheetId(s.sheet_id)});
+  msg(j.ok&&j.tabs?'Connected to "'+j.sheet+'" ('+j.tabs.length+' tabs).':'Failed: '+(j.error||'this is not the Sheet script'),!(j.ok&&j.tabs));};
+ $('#ro').onclick=async()=>{msg('Working...');await syncDues();const[ok,m]=await pushRoster();msg(ok?m:'Failed: '+m,!ok);};
+ $('#rt').onclick=async()=>{const[stu,evs,pay]=await Promise.all([getAll('students'),getAll('events'),getAll('payments')]);const S={},E={};stu.forEach(s=>S[s.id]=s);evs.forEach(e=>E[e.id]=e);
+  let n=0,b=0;for(const p of pay.filter(p=>p.via_scan&&p.synced===false&&S[p.student_id]&&E[p.event_id])){const[ok]=await pushPayment(p,S[p.student_id],E[p.event_id]);ok?n++:b++;}msg('Sent '+n+(b?', '+b+' failed.':'.'),b>0);};
+});
+</script></body></html>

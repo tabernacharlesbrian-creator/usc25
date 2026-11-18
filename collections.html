@@ -1,0 +1,33 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BayadQR</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="assets/css/app.css">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script><script src="app.js"></script></head><body><script>
+boot('Collections','collections.html','What students pay (e.g. Peer Week) and the amount for each section.',async root=>{
+ let sec=[],evs=[],edit=null;
+ root.innerHTML=`<form class="card" id="f"><div class="grid"><div><label>Payment name</label><input id="nm" required placeholder="Week 1"></div><div><label>Date (optional)</label><input id="dt" type="date"></div>
+  <div><label>Fill all sections with</label><div style="display:flex;gap:6px"><input id="fa" type="number" step="0.01" min="0"><button type="button" class="ghost" id="fb">Fill all</button></div></div></div>
+  <h3 style="margin-top:14px">Amount per section <small>(blank = that section does not pay)</small></h3><div class="grid" id="sg"></div>
+  <p><button>Save collection</button> <button type="button" class="ghost" id="cn" style="display:none">Cancel</button></p></form>
+  <div class="card" style="margin-top:16px"><table style="width:100%"><tbody id="t"></tbody></table></div>`;
+ const load=async()=>{[sec,evs]=await Promise.all([getAll('sections'),getAll('events')]);sec.sort((a,b)=>natsort(a.name,b.name));
+  evs.sort((a,b)=>(a.event_date||'9999').localeCompare(b.event_date||'9999')||natsort(a.name,b.name));
+  const cur=edit?(evs.find(e=>e.id===edit)||{}).secAmounts||{}:{};
+  $('#sg').innerHTML=sec.map((s,i)=>`<div><label>${esc(s.name)}</label><input type="number" step="0.01" min="0" data-s="${esc(s.name)}" value="${cur[s.name]??''}"></div>`).join('')||'<p>Add sections first.</p>';
+  $('#t').innerHTML=evs.map(e=>`<tr><td><b>${esc(e.name)}</b><br><small>${esc(e.event_date||'')}</small></td><td><small>${Object.entries(e.secAmounts||{}).map(([k,v])=>esc(k)+': '+money(v)).join('<br>')}</small></td>
+   <td style="white-space:nowrap"><button class="ghost" data-e="${e.id}">Edit</button> <button class="ghost" data-d="${e.id}">Delete</button></td></tr>`).join('')||'<tr><td>No collections yet.</td></tr>';
+  $('#t').querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>{const e=evs.find(x=>x.id===b.dataset.e);edit=e.id;$('#nm').value=e.name;$('#dt').value=e.event_date||'';
+   document.querySelectorAll('#sg input').forEach(i=>i.value=(e.secAmounts||{})[i.dataset.s]??'');$('#cn').style.display='';scrollTo(0,0);});
+  $('#t').querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this collection and all its payment records?'))return;const id=b.dataset.d,w=db.batch();
+   (await getAll('payments')).filter(p=>p.event_id===id).forEach(p=>w.delete(db.collection('payments').doc(p.id)));w.delete(db.collection('events').doc(id));await w.commit();edit=null;load();});};
+ $('#fb').onclick=()=>{const v=$('#fa').value;document.querySelectorAll('#sg input').forEach(i=>i.value=v);};
+ $('#cn').onclick=()=>{edit=null;$('#f').reset();$('#cn').style.display='none';load();};
+ $('#f').onsubmit=async e=>{e.preventDefault();const amts={};document.querySelectorAll('#sg input').forEach(i=>{if(i.value!=='')amts[i.dataset.s]=+i.value;});
+  if(!Object.keys(amts).length)return msg('Set an amount for at least one section.',true);
+  const d={name:$('#nm').value.trim(),event_date:$('#dt').value||null,secAmounts:amts};let id=edit;
+  if(id){await db.collection('events').doc(id).set(d,{merge:true});
+   const stu=await getAll('students'),S={};stu.forEach(s=>S[s.id]=s);const w=db.batch();   // sections removed: drop unpaid rows
+   (await getAll('payments')).filter(p=>p.event_id===id&&!(S[p.student_id]&&amts[S[p.student_id].section]!==undefined)&&(p.paid||0)<=0).forEach(p=>w.delete(db.collection('payments').doc(p.id)));await w.commit();}
+  else{d.created=Date.now();id=(await db.collection('events').add(d)).id;}
+  await syncDues();const[ok,m]=await pushRoster(id);msg('Saved. Every student got the amount of their section.'+(ok?'':' Sheet: '+m));edit=null;$('#f').reset();$('#cn').style.display='none';load();};
+ await load();});
+</script></body></html>

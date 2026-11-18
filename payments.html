@@ -1,0 +1,33 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BayadQR</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="assets/css/app.css">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script><script src="app.js"></script></head><body><script>
+boot('Payments','payments.html','Amount due, paid and balance of every student.',async root=>{
+ let rows=[];
+ root.innerHTML=`<div class="card"><div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px"><select id="fe"></select><select id="fs"></select>
+  <select id="ft"><option value="">All status</option><option value="unpaid">Unpaid</option><option value="partial">Balance left</option><option value="paid">Fully paid</option></select>
+  <input id="q" placeholder="Search name..." style="flex:1;min-width:140px"><button class="ghost" id="cl">Clear filters</button></div>
+  <p id="tot"></p><table style="width:100%"><thead><tr><th align=left>Student</th><th align=left>Payment</th><th>Due</th><th>Paid</th><th>Balance</th><th>Status</th><th></th></tr></thead><tbody id="t"></tbody></table></div>`;
+ const load=async()=>{await syncDues();const[stu,evs,pay,sec]=await Promise.all([getAll('students'),getAll('events'),getAll('payments'),getAll('sections')]);
+  const S={},E={};stu.forEach(s=>S[s.id]=s);evs.forEach(e=>E[e.id]=e);
+  rows=pay.filter(p=>S[p.student_id]&&E[p.event_id]).map(p=>({...p,s:S[p.student_id],e:E[p.event_id]})).sort((a,b)=>natsort(a.e.name,b.e.name)||natsort(a.s.section,b.s.section)||natsort(a.s.full_name,b.s.full_name));
+  const keep=k=>sessionStorage.getItem('pf_'+k)||'';
+  $('#fe').innerHTML='<option value="">All payments</option>'+evs.sort((a,b)=>natsort(a.name,b.name)).map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('');
+  $('#fs').innerHTML='<option value="">All sections</option>'+sec.sort((a,b)=>natsort(a.name,b.name)).map(s=>`<option>${esc(s.name)}</option>`).join('');
+  $('#fe').value=keep('e');$('#fs').value=keep('s');$('#ft').value=keep('t');draw();};
+ const draw=()=>{['e','s','t'].forEach(k=>sessionStorage.setItem('pf_'+k,$('#f'+k).value));
+  const e=$('#fe').value,s=$('#fs').value,t=$('#ft').value,q=$('#q').value.toLowerCase();
+  const r=rows.filter(p=>(!e||p.event_id===e)&&(!s||p.s.section===s)&&(!t||p.status===t)&&p.s.full_name.toLowerCase().includes(q));
+  const due=r.reduce((a,p)=>a+ +p.amount,0),paid=r.reduce((a,p)=>a+(+p.paid||0),0);
+  $('#tot').innerHTML=`<b>${r.length}</b> rows · Due ${money(due)} · Collected ${money(paid)} · Balance ${money(Math.max(0,due-paid))}`;
+  $('#t').innerHTML=r.map(p=>{const b=Math.max(0,p.amount-(p.paid||0));return `<tr><td><b>${esc(p.s.full_name)}</b><br><small>${esc(p.s.section||'')}</small></td><td>${esc(p.e.name)}</td><td align=right>${money(p.amount)}</td><td align=right>${money(p.paid)}</td><td align=right>${money(b)}</td>
+   <td><span class="chip${p.status==='paid'?'':' warn'}">${p.status==='paid'?'Fully paid':p.status==='partial'?'Balance left':'Unpaid'}</span></td><td><button class="ghost" data-e="${p.id}">Edit</button></td></tr>`;}).join('')||'<tr><td>No rows.</td></tr>';
+  $('#t').querySelectorAll('[data-e]').forEach(b=>b.onclick=async()=>{const p=rows.find(x=>x.id===b.dataset.e);
+   const a=prompt('Amount due for '+p.s.full_name+' (₱)',p.amount);if(a===null)return;const pd=prompt('Amount paid so far (₱)',p.paid||0);if(pd===null)return;
+   const A=+a,P=+pd;if(isNaN(A)||isNaN(P)||A<0||P<0)return msg('Enter valid numbers.',true);
+   await db.collection('payments').doc(p.id).set({amount:A,paid:P,custom:true,status:payStatus(A,P),paid_at:P>0?(p.paid_at||Date.now()):null},{merge:true});
+   msg('Saved in the app. The Google Sheet changes when the student is scanned.');load();});};
+ ['fe','fs','ft'].forEach(i=>$('#'+i).onchange=draw);$('#q').oninput=draw;
+ $('#cl').onclick=()=>{['e','s','t'].forEach(k=>$('#f'+k).value='');$('#q').value='';draw();};
+ await load();});
+</script></body></html>

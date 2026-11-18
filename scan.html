@@ -1,0 +1,61 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BayadQR</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="assets/css/app.css">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script><script src="app.js"></script><script src="assets/js/jsQR.js"></script></head><body><script>
+boot('Scan','scan.html','Choose the section and what they are paying for, then scan each student. Scan again to pay a balance that is left.',async root=>{
+ let stu=[],evs=[],S={},stream=null,facing='environment',raf=0,last='',lastAt=0,busy=false;
+ root.innerHTML=`<div class="scan-grid"><section class="unit" id="unit" data-state="off"><div class="unit-top"><i class="led"></i><span id="cs">Camera is off</span></div>
+  <div class="viewfinder" id="vf"><video id="v" playsinline muted autoplay></video><div class="aim"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i><span class="laser"></span></div></div>
+  <div class="unit-bar"><button type="button" id="cb">Start camera</button><button type="button" class="flip show" id="fl">Flip</button></div><p class="note">The camera and a USB QR scanner both work.</p></section>
+  <div><div class="pick"><label>Section</label><select id="sc"></select></div><div class="pick"><label>Fee (what they pay)</label><select id="ev"><option value="">Choose a section first</option></select></div>
+  <div id="status" class="status noamt"><div class="res-main"><b>Ready</b><span>Choose a section and a fee, then scan a QR code or type the student's name.</span></div></div>
+  <form id="tf" class="type-row" autocomplete="off"><input id="ty" placeholder="Type a student name, then press Enter"><button>Record</button></form>
+  <div class="pick" style="margin-top:-6px"><label>Amount received now (₱) <small>- blank = pays the whole balance</small></label><input id="am" type="number" step="0.01" min="0" placeholder="Full balance" style="max-width:220px"></div>
+  <div class="log"><h2>Recent scans</h2><ul class="recent" id="rc"><li><span class="none">Nothing scanned yet.</span></li></ul></div></div></div>`;
+ [stu,evs]=await Promise.all([getAll('students'),getAll('events')]);stu.forEach(s=>S[s.id]=s);
+ evs.sort((a,b)=>(a.event_date||'9999').localeCompare(b.event_date||'9999')||natsort(a.name,b.name));
+ const secs=[...new Set(evs.flatMap(e=>Object.keys(e.secAmounts||{})))].sort(natsort);
+ $('#sc').innerHTML='<option value="">Choose a section</option>'+secs.map(s=>`<option>${esc(s)}</option>`).join('');
+ $('#sc').onchange=()=>{const s=$('#sc').value;$('#ev').innerHTML=s?evs.filter(e=>(e.secAmounts||{})[s]!==undefined).map(e=>`<option value="${e.id}">${esc(e.name)} - ${money(e.secAmounts[s])}</option>`).join(''):'<option value="">Choose a section first</option>';};
+ const show=(ok,title,detail,amt,time)=>{$('#status').className='status '+(ok?'good':'bad');$('#status').innerHTML=`<div class="res-main"><b>${esc(title)}</b><span>${esc(detail||'')}</span></div>`+(amt!=null?`<div class="res-stub"><em>${money(amt)}</em><small>${esc(time||'')}</small></div>`:'');
+  $('#unit').dataset.state=ok?'good':'bad';setTimeout(()=>{$('#unit').dataset.state=stream?'on':'off'},1500);if(navigator.vibrate)navigator.vibrate(ok?60:[80,60,80]);};
+ const cands=raw=>{raw=raw.trim().replace(/[\u0000-\u001f\u007f\ufeff]/g,'');const c=[raw];try{const j=JSON.parse(raw);['qr','qr_code','code','id'].forEach(k=>j[k]&&c.push(String(j[k]).trim()));}catch(e){}
+  let m=raw.match(/[?&](?:qr|code|id)=([^&#]+)/i);if(m)c.push(decodeURIComponent(m[1]));m=raw.match(/(?:CICI|USC)[\s_-]*0*(\d+)/i);if(m)c.push('CICI-'+m[1].padStart(5,'0'));if(/^\d+$/.test(raw))c.push('CICI-'+raw.padStart(5,'0'));return c.map(x=>x.toLowerCase());};
+ const find=(raw,sec)=>{const cs=cands(raw);let s=stu.find(x=>cs.includes(String(x.qr_code||'').toLowerCase()));if(s)return[s];
+  const q=raw.trim().toLowerCase();let f=stu.filter(x=>x.full_name.toLowerCase()===q&&(!sec||x.section===sec));if(!f.length)f=stu.filter(x=>x.full_name.toLowerCase().includes(q)&&(!sec||x.section===sec));return f;};
+ async function record(raw){raw=raw.trim();if(!raw||busy)return;const sec=$('#sc').value,eid=$('#ev').value,ev=evs.find(e=>e.id===eid);
+  if(!sec||!ev)return show(false,'Pick a section and a fee first','');
+  const f=find(raw,sec);if(f.length>1)return show(false,'More than one student matches',f.slice(0,5).map(x=>x.full_name).join(', ')+'. Type the full name.');
+  const s=f[0];if(!s)return show(false,'Student not found','Scanned: "'+raw.slice(0,60)+'"');
+  if(s.section!==sec)return show(false,'Wrong section: '+s.full_name,'This student is in "'+(s.section||'no section')+'", but the scanner is set to "'+sec+'".');
+  const amt=(ev.secAmounts||{})[s.section];if(amt===undefined)return show(false,'Not part of this payment: '+s.full_name,'');
+  const asked=Math.round((+$('#am').value||0)*100)/100;if(asked<0)return show(false,'Amount cannot be negative','');busy=true;
+  try{const ref=db.collection('payments').doc(ev.id+'_'+s.id);
+   const r=await db.runTransaction(async tx=>{const d=await tx.get(ref);let p=d.exists?d.data():{event_id:ev.id,student_id:s.id,amount:+amt,paid:0,paid_at:null,custom:false,via_scan:false,status:'unpaid'};
+    const due=+p.amount,was=+p.paid||0,left=Math.max(0,due-was);
+    if(left<=.004)return{dup:'Already fully paid: '+s.full_name,d:'Paid '+money(was)+(p.paid_at?' · last '+fmt(p.paid_at):''),was,at:p.paid_at};
+    if(p.via_scan&&p.paid_at&&Date.now()-p.paid_at<8000)return{dup:'Just scanned: '+s.full_name,d:'Balance '+money(left)+'. Wait a few seconds, then scan again.',was,at:p.paid_at};
+    const add=asked>0?Math.min(asked,left):left,nw=Math.round((was+add)*100)/100,t=Date.now();p={...p,paid:nw,paid_at:t,via_scan:true,status:payStatus(due,nw),synced:false};tx.set(ref,p);return{p,add,due,nw,t};});
+   if(r.dup)return show(false,r.dup,r.d,r.was,fmt(r.at));
+   const bal=Math.max(0,r.due-r.nw);show(true,s.full_name+(bal<=.004?' · Fully paid':' · Balance '+money(bal)),ev.name+' · '+s.section,r.add,fmt(r.t));
+   const[ok,err]=await pushPayment({...r.p,id:ref.id},s,ev);if(!ok){$('#status').querySelector('.res-main').insertAdjacentHTML('beforeend','<span style="color:#8a5a00">Saved, but NOT in the Google Sheet yet: '+esc(err)+'</span>');}
+   $('#am').value='';
+  }catch(e){show(false,'Error',e.message);}finally{busy=false;}}
+ $('#tf').onsubmit=e=>{e.preventDefault();const v=$('#ty').value;$('#ty').value='';record(v);};
+ document.addEventListener('keydown',e=>{if(document.activeElement.tagName!=='INPUT'&&document.activeElement.tagName!=='SELECT'){if(e.key.length===1){$('#ty').focus();}}});   // USB scanner types into the box
+ // live "Recent scans"
+ db.collection('payments').orderBy('paid_at','desc').limit(30).onSnapshot(q=>{const r=q.docs.map(d=>d.data()).filter(p=>p.via_scan&&p.paid_at&&S[p.student_id]).slice(0,10);
+  $('#rc').innerHTML=r.map(p=>{const e=evs.find(x=>x.id===p.event_id)||{};return `<li><b>${esc(S[p.student_id].full_name)}</b> · ${esc(e.name||'')} · ${money(p.paid)} ${p.status==='paid'?'✅':'(balance '+money(p.amount-p.paid)+')'}<br><small>${fmt(p.paid_at)}</small></li>`;}).join('')||'<li><span class="none">Nothing scanned yet.</span></li>';});
+ // camera (jsQR)
+ const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
+ const stop=()=>{cancelAnimationFrame(raf);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$('#v').srcObject=null;$('#cb').textContent='Start camera';$('#cb').classList.remove('stop');$('#unit').dataset.state='off';$('#cs').textContent='Camera is off';};
+ const tick=()=>{const v=$('#v');if(stream&&v.readyState>=2&&v.videoWidth){const w=Math.min(640,v.videoWidth),h=Math.round(w*v.videoHeight/v.videoWidth);cv.width=w;cv.height=h;cx.drawImage(v,0,0,w,h);
+   const c=jsQR(cx.getImageData(0,0,w,h).data,w,h,{inversionAttempts:'attemptBoth'});if(c&&c.data&&(c.data!==last||Date.now()-lastAt>4000)){last=c.data;lastAt=Date.now();record(c.data);}}
+  raf=requestAnimationFrame(tick);};
+ const start=async()=>{stop();if(!window.isSecureContext)return show(false,'Camera needs HTTPS','Open this page with https:// (or localhost).');
+  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1280}},audio:false});$('#v').srcObject=stream;await $('#v').play();
+   $('#cb').textContent='Stop camera';$('#cb').classList.add('stop');$('#unit').dataset.state='on';$('#cs').textContent='Scanning...';tick();}
+  catch(e){show(false,'Cannot open the camera',e.name==='NotAllowedError'?'Allow camera access in the browser, then press Start camera.':e.message);}};
+ $('#cb').onclick=()=>stream?stop():start();$('#fl').onclick=()=>{facing=facing==='environment'?'user':'environment';if(stream)start();};
+});
+</script></body></html>

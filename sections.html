@@ -1,0 +1,14 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BayadQR</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="assets/css/app.css">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script><script src="app.js"></script></head><body><script>
+boot('Sections','sections.html','Add the sections (e.g. BSIT 3C Mauchly).',async root=>{
+ root.innerHTML='<form class="card" id="f" style="display:flex;gap:10px;flex-wrap:wrap"><input id="n" placeholder="Section name" required style="flex:1;min-width:200px"><button>Add section</button></form><div class="card" style="margin-top:16px"><table style="width:100%"><tbody id="t"></tbody></table></div>';
+ const draw=async()=>{const s=(await getAll('sections')).sort((a,b)=>natsort(a.name,b.name));
+  $('#t').innerHTML=s.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td style="text-align:right"><button class="ghost" data-d="${x.id}">Delete</button></td></tr>`).join('')||'<tr><td>No sections yet.</td></tr>';
+  $('#t').querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this section? Students are kept.'))return;await db.collection('sections').doc(b.dataset.d).delete();draw();});};
+ $('#f').onsubmit=async e=>{e.preventDefault();const n=$('#n').value.trim();if(!n)return;
+  if((await getAll('sections')).some(x=>x.name.toLowerCase()===n.toLowerCase()))return msg('That section already exists.',true);
+  await db.collection('sections').add({name:n});$('#n').value='';msg('');draw();};
+ draw();});
+</script></body></html>

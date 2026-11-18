@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ONLY your own login can read/write. Put YOUR email here.
+    match /{document=**} {
+      allow read, write: if request.auth != null && request.auth.token.email == 'your-email@gmail.com';
+    }
+  }
+}
