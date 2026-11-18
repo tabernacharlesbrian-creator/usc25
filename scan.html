@@ -5,20 +5,47 @@
 boot('Scan','scan.html','Choose the section and what they are paying for, then scan each student. Scan again to pay a balance that is left.',async root=>{
  let stu=[],evs=[],S={},stream=null,facing='environment',raf=0,last='',lastAt=0,busy=false;
  root.innerHTML=`<div class="scan-grid"><section class="unit" id="unit" data-state="off"><div class="unit-top"><i class="led"></i><span id="cs">Camera is off</span></div>
-  <div class="viewfinder" id="vf"><video id="v" playsinline muted autoplay></video><div class="aim"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i><span class="laser"></span></div></div>
+  <div class="viewfinder" id="vf"><video id="v" playsinline muted autoplay></video><div class="aim"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i><span class="laser"></span></div><button type="button" class="vf-idle" id="ci"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"><path d="M8 22V12a4 4 0 0 1 4-4h10M42 8h10a4 4 0 0 1 4 4v10M56 42v10a4 4 0 0 1-4 4H42M22 56H12a4 4 0 0 1-4-4V42"/><rect x="20" y="20" width="9" height="9" rx="1.5"/><rect x="35" y="20" width="9" height="9" rx="1.5"/><rect x="20" y="35" width="9" height="9" rx="1.5"/></svg>Tap to start the camera</button><div class="vf-msg" id="vm" role="status"></div></div>
   <div class="unit-bar"><button type="button" id="cb">Start camera</button><button type="button" class="flip show" id="fl">Flip</button></div><p class="note">The camera and a USB QR scanner both work.</p></section>
   <div><div class="pick"><label>Section</label><select id="sc"></select></div><div class="pick"><label>Fee (what they pay)</label><select id="ev"><option value="">Choose a section first</option></select></div>
   <div id="status" class="status noamt"><div class="res-main"><b>Ready</b><span>Choose a section and a fee, then scan a QR code or type the student's name.</span></div></div>
   <form id="tf" class="type-row" autocomplete="off"><input id="ty" placeholder="Type a student name, then press Enter"><button>Record</button></form>
   <div class="pick" style="margin-top:-6px"><label>Amount received now (₱) <small>- blank = pays the whole balance</small></label><input id="am" type="number" step="0.01" min="0" placeholder="Full balance" style="max-width:220px"></div>
   <div class="log"><h2>Recent scans</h2><ul class="recent" id="rc"><li><span class="none">Nothing scanned yet.</span></li></ul></div></div></div>`;
- [stu,evs]=await Promise.all([getAll('students'),getAll('events')]);stu.forEach(s=>S[s.id]=s);
+ const show=(ok,title,detail,amt,time)=>{$('#status').className='status '+(ok?'good':'bad');$('#status').innerHTML=`<div class="res-main"><b>${esc(title)}</b><span>${esc(detail||'')}</span></div>`+(amt!=null?`<div class="res-stub"><em>${money(amt)}</em><small>${esc(time||'')}</small></div>`:'');
+  $('#unit').dataset.state=ok?'good':'bad';$('#vf').classList.add(ok?'good':'bad');setTimeout(()=>{$('#vf').classList.remove('good','bad');$('#unit').dataset.state=stream?'on':'off'},1200);if(navigator.vibrate)navigator.vibrate(ok?60:[80,60,80]);};
+ // ---- camera: wired FIRST, so it works even if the data below is still loading or fails ----
+ const vf=$('#vf'),vid=$('#v'),cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
+ let loop=0;const det=('BarcodeDetector' in window)?new BarcodeDetector({formats:['qr_code']}):null;
+ const note=m=>{const x=$('#vm');x.textContent=m||'';x.classList.toggle('on',!!m);};
+ const stop=()=>{loop++;if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;vid.srcObject=null;vf.classList.remove('live','mirror');$('#cb').textContent='Start camera';$('#cb').classList.remove('stop');$('#unit').dataset.state='off';$('#cs').textContent='Camera is off';};
+ const tick=async id=>{if(id!==loop||!stream)return;
+  try{if(vid.readyState>=2&&vid.videoWidth&&!busy){let code='';
+    if(det){try{const r=await det.detect(vid);if(r.length)code=r[0].rawValue;}catch(e){}}
+    if(!code&&typeof jsQR==='function'){const w=Math.min(640,vid.videoWidth),h=Math.round(w*vid.videoHeight/vid.videoWidth);cv.width=w;cv.height=h;cx.drawImage(vid,0,0,w,h);const c=jsQR(cx.getImageData(0,0,w,h).data,w,h,{inversionAttempts:'attemptBoth'});if(c)code=c.data;}
+    if(code&&(code!==last||Date.now()-lastAt>4000)){last=code;lastAt=Date.now();record(code);}}}catch(e){}
+  setTimeout(()=>tick(id),120);};
+ const start=async()=>{stop();note('');
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)return note('This browser cannot use the camera. Use Chrome or Safari and open the https:// link.');
+  if(!window.isSecureContext)return note('The camera needs https://. Open the https:// link of your site (not a file or http).');
+  $('#cs').textContent='Starting camera...';let err;
+  for(const c of [{video:{facingMode:{ideal:facing},width:{ideal:1280},height:{ideal:720}},audio:false},{video:{facingMode:{ideal:facing}},audio:false},{video:true,audio:false}]){
+   try{stream=await navigator.mediaDevices.getUserMedia(c);break;}catch(e){err=e;if(e.name==='NotAllowedError'||e.name==='SecurityError')break;}}
+  if(!stream){$('#cs').textContent='Camera is off';const n=err&&err.name;
+   return note(n==='NotAllowedError'?'Camera is blocked. Tap the lock icon beside the address, set Camera to Allow, then press Start camera.':n==='NotFoundError'?'No camera found on this device.':n==='NotReadableError'?'Another app is using the camera. Close it and try again.':(err&&err.message)||'Cannot open the camera.');}
+  vid.srcObject=stream;vid.muted=true;vid.setAttribute('playsinline','');
+  vf.classList.add('live');                       // the video stays hidden by the CSS until this class is set
+  try{await vid.play();}catch(e){}
+  const s=(stream.getVideoTracks()[0].getSettings&&stream.getVideoTracks()[0].getSettings())||{};vf.classList.toggle('mirror',s.facingMode==='user');
+  $('#cb').textContent='Stop camera';$('#cb').classList.add('stop');$('#unit').dataset.state='on';$('#cs').textContent='Scanning...';tick(++loop);};
+ $('#cb').onclick=()=>stream?stop():start();$('#ci').onclick=start;
+ $('#fl').onclick=()=>{facing=facing==='environment'?'user':'environment';if(stream)start();};
+ window.addEventListener('pagehide',stop);
+ try{[stu,evs]=await Promise.all([getAll('students'),getAll('events')]);stu.forEach(s=>S[s.id]=s);}catch(e){return show(false,'Cannot load the data',e.code==='permission-denied'?'Permission denied: the email in Firestore Rules must be the same as your login email.':e.message);}
  evs.sort((a,b)=>(a.event_date||'9999').localeCompare(b.event_date||'9999')||natsort(a.name,b.name));
  const secs=[...new Set(evs.flatMap(e=>Object.keys(e.secAmounts||{})))].sort(natsort);
  $('#sc').innerHTML='<option value="">Choose a section</option>'+secs.map(s=>`<option>${esc(s)}</option>`).join('');
  $('#sc').onchange=()=>{const s=$('#sc').value;$('#ev').innerHTML=s?evs.filter(e=>(e.secAmounts||{})[s]!==undefined).map(e=>`<option value="${e.id}">${esc(e.name)} - ${money(e.secAmounts[s])}</option>`).join(''):'<option value="">Choose a section first</option>';};
- const show=(ok,title,detail,amt,time)=>{$('#status').className='status '+(ok?'good':'bad');$('#status').innerHTML=`<div class="res-main"><b>${esc(title)}</b><span>${esc(detail||'')}</span></div>`+(amt!=null?`<div class="res-stub"><em>${money(amt)}</em><small>${esc(time||'')}</small></div>`:'');
-  $('#unit').dataset.state=ok?'good':'bad';setTimeout(()=>{$('#unit').dataset.state=stream?'on':'off'},1500);if(navigator.vibrate)navigator.vibrate(ok?60:[80,60,80]);};
  const cands=raw=>{raw=raw.trim().replace(/[\u0000-\u001f\u007f\ufeff]/g,'');const c=[raw];try{const j=JSON.parse(raw);['qr','qr_code','code','id'].forEach(k=>j[k]&&c.push(String(j[k]).trim()));}catch(e){}
   let m=raw.match(/[?&](?:qr|code|id)=([^&#]+)/i);if(m)c.push(decodeURIComponent(m[1]));m=raw.match(/(?:CICI|USC)[\s_-]*0*(\d+)/i);if(m)c.push('CICI-'+m[1].padStart(5,'0'));if(/^\d+$/.test(raw))c.push('CICI-'+raw.padStart(5,'0'));return c.map(x=>x.toLowerCase());};
  const find=(raw,sec)=>{const cs=cands(raw);let s=stu.find(x=>cs.includes(String(x.qr_code||'').toLowerCase()));if(s)return[s];
@@ -46,16 +73,5 @@ boot('Scan','scan.html','Choose the section and what they are paying for, then s
  // live "Recent scans"
  db.collection('payments').orderBy('paid_at','desc').limit(30).onSnapshot(q=>{const r=q.docs.map(d=>d.data()).filter(p=>p.via_scan&&p.paid_at&&S[p.student_id]).slice(0,10);
   $('#rc').innerHTML=r.map(p=>{const e=evs.find(x=>x.id===p.event_id)||{};return `<li><b>${esc(S[p.student_id].full_name)}</b> · ${esc(e.name||'')} · ${money(p.paid)} ${p.status==='paid'?'✅':'(balance '+money(p.amount-p.paid)+')'}<br><small>${fmt(p.paid_at)}</small></li>`;}).join('')||'<li><span class="none">Nothing scanned yet.</span></li>';});
- // camera (jsQR)
- const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
- const stop=()=>{cancelAnimationFrame(raf);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$('#v').srcObject=null;$('#cb').textContent='Start camera';$('#cb').classList.remove('stop');$('#unit').dataset.state='off';$('#cs').textContent='Camera is off';};
- const tick=()=>{const v=$('#v');if(stream&&v.readyState>=2&&v.videoWidth){const w=Math.min(640,v.videoWidth),h=Math.round(w*v.videoHeight/v.videoWidth);cv.width=w;cv.height=h;cx.drawImage(v,0,0,w,h);
-   const c=jsQR(cx.getImageData(0,0,w,h).data,w,h,{inversionAttempts:'attemptBoth'});if(c&&c.data&&(c.data!==last||Date.now()-lastAt>4000)){last=c.data;lastAt=Date.now();record(c.data);}}
-  raf=requestAnimationFrame(tick);};
- const start=async()=>{stop();if(!window.isSecureContext)return show(false,'Camera needs HTTPS','Open this page with https:// (or localhost).');
-  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1280}},audio:false});$('#v').srcObject=stream;await $('#v').play();
-   $('#cb').textContent='Stop camera';$('#cb').classList.add('stop');$('#unit').dataset.state='on';$('#cs').textContent='Scanning...';tick();}
-  catch(e){show(false,'Cannot open the camera',e.name==='NotAllowedError'?'Allow camera access in the browser, then press Start camera.':e.message);}};
- $('#cb').onclick=()=>stream?stop():start();$('#fl').onclick=()=>{facing=facing==='environment'?'user':'environment';if(stream)start();};
 });
 </script></body></html>
